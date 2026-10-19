@@ -1,13 +1,18 @@
 import {
   Action,
   ActionPanel,
+  Alert,
   closeMainWindow,
+  confirmAlert,
   environment,
   getPreferenceValues,
   Icon,
   LaunchProps,
   List,
+  LocalStorage,
   showHUD,
+  showToast,
+  Toast,
 } from "@raycast/api";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -72,15 +77,35 @@ type HistoryItem = { url: string; title: string; favicon?: string };
 
 const FAVICON_DIR = join(environment.supportPath, "favicons");
 
-// Chrome locks its History/Favicons DBs while running, so query snapshot copies.
-function snapshotHistory(): string | undefined {
+// Suggestions the user hid, per Chrome profile. Only filters this list; Chrome's history is untouched.
+type Blocklist = { urls: string[]; hosts: string[] };
+const blocklistKey = (profile: string) => `blocklist:${profile}`;
+
+async function loadBlocklist(profile: string): Promise<Blocklist> {
+  const raw = await LocalStorage.getItem<string>(blocklistKey(profile));
+  return raw ? JSON.parse(raw) : { urls: [], hosts: [] };
+}
+
+function hostOf(url: string): string | undefined {
   try {
-    let profile = "Default";
-    try {
-      profile = JSON.parse(readFileSync(join(CHROME_DIR, "Local State"), "utf8")).profile?.last_used || profile;
-    } catch {
-      // keep Default
-    }
+    return new URL(url).host || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Chrome locks its History/Favicons DBs while running, so query snapshot copies.
+// The profile Chrome last used, which is also where `--app` windows open.
+function currentProfile(): string {
+  try {
+    return JSON.parse(readFileSync(join(CHROME_DIR, "Local State"), "utf8")).profile?.last_used || "Default";
+  } catch {
+    return "Default";
+  }
+}
+
+function snapshotHistory(profile: string): string | undefined {
+  try {
     const dest = join(tmpdir(), "little-chrome-history.sqlite");
     copyFileSync(join(CHROME_DIR, profile, "History"), dest);
     try {
@@ -101,13 +126,19 @@ async function sqlite<T>(db: string, sql: string): Promise<T[]> {
   return stdout.trim() ? JSON.parse(stdout) : [];
 }
 
-async function searchHistory(db: string, text: string): Promise<HistoryItem[]> {
+async function searchHistory(db: string, text: string, blocklist: Blocklist): Promise<HistoryItem[]> {
   const words = text.trim().split(/\s+/).filter(Boolean);
   const escape = (w: string) => w.replace(/'/g, "''").replace(/[\\%_]/g, "\\$&");
   const where = words.map((w) => {
     const like = `'%${escape(w)}%'`;
     return `(url LIKE ${like} ESCAPE '\\' OR title LIKE ${like} ESCAPE '\\')`;
   });
+  if (blocklist.urls.length)
+    where.push(`url NOT IN (${blocklist.urls.map((u) => `'${u.replace(/'/g, "''")}'`).join(",")})`);
+  for (const host of blocklist.hosts) {
+    const h = escape(host);
+    where.push(`NOT (url LIKE 'https://${h}/%' ESCAPE '\\' OR url LIKE 'http://${h}/%' ESCAPE '\\')`);
+  }
   const filter = `hidden = 0 ${where.map((w) => `AND ${w}`).join(" ")}`;
   // Frecency: visits (typed ones weigh double) decayed by days since the last visit,
   // tripled when the first word matches the start of the host (e.g. "git" -> github.com).
@@ -159,16 +190,38 @@ export default function Command(props: LaunchProps) {
   // result set fresh ids to make selectedItemId change and re-select the top history row.
   const [generation, setGeneration] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
-  const db = useMemo(snapshotHistory, []);
+  const [blocklist, setBlocklist] = useState<Blocklist>();
+  const profile = useMemo(currentProfile, []);
+  const db = useMemo(() => snapshotHistory(profile), [profile]);
 
   useEffect(() => {
+    loadBlocklist(profile).then(setBlocklist);
+  }, [profile]);
+
+  async function updateBlocklist(next: Blocklist) {
+    await LocalStorage.setItem(blocklistKey(profile), JSON.stringify(next));
+    setBlocklist(next);
+  }
+
+  async function hide(next: Blocklist, title: string) {
+    const previous = blocklist!;
+    await updateBlocklist(next);
+    await showToast({
+      style: Toast.Style.Success,
+      title,
+      primaryAction: { title: "Undo", onAction: () => updateBlocklist(previous) },
+    });
+  }
+
+  useEffect(() => {
+    if (!blocklist) return;
     if (!db) return setIsLoading(false);
     let cancelled = false;
     setIsLoading(true);
     // Debounce the query only; the typed row follows searchText immediately and stays selected
     // until fresh results arrive, so Enter while typing opens what was typed.
     const timer = setTimeout(() => {
-      searchHistory(db, searchText)
+      searchHistory(db, searchText, blocklist)
         .then((r) => {
           if (cancelled) return;
           setItems(r);
@@ -181,7 +234,7 @@ export default function Command(props: LaunchProps) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [db, searchText]);
+  }, [db, searchText, blocklist]);
 
   const typed = searchText.trim();
 
@@ -223,6 +276,49 @@ export default function Command(props: LaunchProps) {
               <ActionPanel>
                 <Action title="Open in Little Chrome" icon={Icon.Window} onAction={() => openLittleChrome(item.url)} />
                 <Action.CopyToClipboard title="Copy URL" content={item.url} />
+                <ActionPanel.Section>
+                  <Action
+                    title="Hide from Suggestions"
+                    icon={Icon.EyeDisabled}
+                    style={Action.Style.Destructive}
+                    shortcut={{ modifiers: ["ctrl"], key: "x" }}
+                    onAction={() =>
+                      blocklist &&
+                      hide({ ...blocklist, urls: [...blocklist.urls, item.url] }, "Hidden from suggestions")
+                    }
+                  />
+                  {hostOf(item.url) && (
+                    <Action
+                      title={`Hide All from ${hostOf(item.url)}`}
+                      icon={Icon.EyeDisabled}
+                      style={Action.Style.Destructive}
+                      shortcut={{ modifiers: ["ctrl", "shift"], key: "x" }}
+                      onAction={() =>
+                        blocklist &&
+                        hide(
+                          { ...blocklist, hosts: [...blocklist.hosts, hostOf(item.url)!] },
+                          `Hidden ${hostOf(item.url)} from suggestions`,
+                        )
+                      }
+                    />
+                  )}
+                  {blocklist && (blocklist.urls.length > 0 || blocklist.hosts.length > 0) && (
+                    <Action
+                      title="Restore Hidden Suggestions"
+                      icon={Icon.Eye}
+                      onAction={async () => {
+                        if (
+                          await confirmAlert({
+                            title: "Restore all hidden suggestions?",
+                            message: `${blocklist.urls.length} pages and ${blocklist.hosts.length} sites will appear again.`,
+                            primaryAction: { title: "Restore", style: Alert.ActionStyle.Default },
+                          })
+                        )
+                          await updateBlocklist({ urls: [], hosts: [] });
+                      }}
+                    />
+                  )}
+                </ActionPanel.Section>
               </ActionPanel>
             }
           />
