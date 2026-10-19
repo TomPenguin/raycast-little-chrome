@@ -1,6 +1,7 @@
 import {
   Action,
   ActionPanel,
+  Cache,
   closeMainWindow,
   environment,
   getPreferenceValues,
@@ -14,7 +15,7 @@ import {
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Blocklist, CHROME_DIR, currentProfile, loadBlocklist, saveBlocklist } from "./blocklist";
 import { addLittleWindowId, CHROME, exec, osascript, windowIds } from "./chrome";
 import { ManageHiddenSuggestions } from "./manage-hidden";
@@ -188,15 +189,23 @@ async function searchHistory(db: string, text: string, blocklist: Blocklist): Pr
   }
 }
 
+// Last suggestions for an empty search, shown instantly on open while fresh ones load.
+const cache = new Cache();
+
 export default function Command(props: LaunchProps) {
   const [searchText, setSearchText] = useState(props.fallbackText ?? "");
-  const [items, setItems] = useState<HistoryItem[]>([]);
+  const profile = useMemo(currentProfile, []);
+  const cacheKey = `initial:${profile}`;
+  const [items, setItems] = useState<HistoryItem[]>(() => {
+    const cached = !props.fallbackText && cache.get(cacheKey);
+    return cached ? JSON.parse(cached) : [];
+  });
+  const firstQuery = useRef(true);
   // Raycast resets the selection to the first row on every search change, so give each
   // result set fresh ids to make selectedItemId change and re-select the top history row.
   const [generation, setGeneration] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [blocklist, setBlocklist] = useState<Blocklist>();
-  const profile = useMemo(currentProfile, []);
   const db = useMemo(() => snapshotHistory(profile), [profile]);
 
   useEffect(() => {
@@ -223,23 +232,26 @@ export default function Command(props: LaunchProps) {
     if (!db) return setIsLoading(false);
     let cancelled = false;
     setIsLoading(true);
-    // Debounce the query only; the typed row follows searchText immediately and stays selected
-    // until fresh results arrive, so Enter while typing opens what was typed.
+    // Debounce the query only (not the first one); the typed row follows searchText immediately and
+    // stays selected until fresh results arrive, so Enter while typing opens what was typed.
+    const delay = firstQuery.current ? 0 : 150;
+    firstQuery.current = false;
     const timer = setTimeout(() => {
       searchHistory(db, searchText, blocklist)
         .then((r) => {
           if (cancelled) return;
           setItems(r);
           setGeneration((g) => g + 1);
+          if (!searchText.trim()) cache.set(cacheKey, JSON.stringify(r));
         })
         .catch(() => !cancelled && setItems([]))
         .finally(() => !cancelled && setIsLoading(false));
-    }, 150);
+    }, delay);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [db, searchText, blocklist]);
+  }, [db, searchText, blocklist, cacheKey]);
 
   const typed = searchText.trim();
 
