@@ -10,6 +10,7 @@ The window has no address bar, tab bar or bookmarks bar, uses your normal Chrome
   - Input with a scheme (`https://…`, `chrome://…`) is opened as is.
   - Domains and IP addresses get `https://`; `localhost`, `127.0.0.1`, `*.localhost` and `*.test` get `http://`.
   - Anything else becomes a Google search.
+  - Press ⌃X on a history item to hide it from suggestions, or ⌃⇧X to hide every page from that site. Hidden items are kept per Chrome profile and are never deleted from Chrome's history. Use **Restore Hidden Suggestions** in the action panel to bring them back.
 - **Open Little Chrome in Tab** — moves the focused Little Chrome window into a new tab of your frontmost normal Chrome window (or a new window if none is open).
 - **Copy Chrome URL** — copies the URL of the focused Chrome window, including Little Chrome windows that have no address bar.
 
