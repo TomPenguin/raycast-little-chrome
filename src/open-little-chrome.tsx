@@ -106,6 +106,17 @@ async function launchLittleChrome(url: string): Promise<void> {
   await closeMainWindow({ clearRootSearch: true });
 }
 
+// Chrome opens URLs from other apps in its last active normal window, never in an app window.
+async function openInChromeTab(url: string): Promise<void> {
+  try {
+    await exec("open", ["-a", CHROME, url]);
+  } catch (e) {
+    await showHUD(`Opening in Chrome failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  await closeMainWindow({ clearRootSearch: true });
+}
+
 type HistoryItem = { url: string; title: string; favicon?: string };
 
 const FAVICON_DIR = join(environment.supportPath, "favicons");
@@ -302,6 +313,7 @@ export default function Command(props: LaunchProps) {
                 icon={Icon.Window}
                 onAction={() => launchLittleChrome(toUrl(typed))}
               />
+              <Action title="Open in Chrome Tab" icon={Icon.Globe} onAction={() => openInChromeTab(toUrl(typed))} />
               {manageAction}
             </ActionPanel>
           }
@@ -322,6 +334,7 @@ export default function Command(props: LaunchProps) {
                   icon={Icon.Window}
                   onAction={() => launchLittleChrome(item.url)}
                 />
+                <Action title="Open in Chrome Tab" icon={Icon.Globe} onAction={() => openInChromeTab(item.url)} />
                 <Action.CopyToClipboard title="Copy URL" content={item.url} />
                 <ActionPanel.Section>
                   <Action
