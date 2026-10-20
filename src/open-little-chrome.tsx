@@ -6,7 +6,9 @@ import {
   environment,
   getPreferenceValues,
   Icon,
+  launchCommand,
   LaunchProps,
+  LaunchType,
   List,
   showHUD,
   showToast,
@@ -95,6 +97,13 @@ export async function openLittleChrome(url: string): Promise<void> {
     return;
   }
   if (before) await resizeNewWindow(before, url, width, height).catch(() => undefined);
+}
+
+// Raycast stops a view command once its window closes, before the new window is resized and
+// recorded, so hand the URL to the no-view Open URL command.
+async function launchLittleChrome(url: string): Promise<void> {
+  await launchCommand({ name: "open-url", type: LaunchType.Background, arguments: { url } });
+  await closeMainWindow({ clearRootSearch: true });
 }
 
 type HistoryItem = { url: string; title: string; favicon?: string };
@@ -291,7 +300,7 @@ export default function Command(props: LaunchProps) {
               <Action
                 title="Open in Little Chrome"
                 icon={Icon.Window}
-                onAction={() => openLittleChrome(toUrl(typed))}
+                onAction={() => launchLittleChrome(toUrl(typed))}
               />
               {manageAction}
             </ActionPanel>
@@ -308,7 +317,11 @@ export default function Command(props: LaunchProps) {
             subtitle={item.title ? item.url : undefined}
             actions={
               <ActionPanel>
-                <Action title="Open in Little Chrome" icon={Icon.Window} onAction={() => openLittleChrome(item.url)} />
+                <Action
+                  title="Open in Little Chrome"
+                  icon={Icon.Window}
+                  onAction={() => launchLittleChrome(item.url)}
+                />
                 <Action.CopyToClipboard title="Copy URL" content={item.url} />
                 <ActionPanel.Section>
                   <Action
