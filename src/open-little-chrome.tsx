@@ -6,7 +6,9 @@ import {
   environment,
   getPreferenceValues,
   Icon,
+  launchCommand,
   LaunchProps,
+  LaunchType,
   List,
   showHUD,
   showToast,
@@ -16,7 +18,15 @@ import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Blocklist, CHROME_DIR, currentProfile, loadBlocklist, saveBlocklist } from "./blocklist";
+import {
+  Blocklist,
+  CHROME_DIR,
+  currentProfile,
+  isBlocked,
+  loadBlocklist,
+  profileName,
+  saveBlocklist,
+} from "./blocklist";
 import { addLittleWindowId, CHROME, exec, osascript, windowIds } from "./chrome";
 import { ManageHiddenSuggestions } from "./manage-hidden";
 
@@ -41,9 +51,9 @@ async function isChromeRunning(): Promise<boolean> {
 
 const bareHost = (url: string) => hostOf(url)?.replace(/^www\./, "");
 
-// Finds the app window this launch created among windows that did not exist before. Prefer a
-// single-tab window on the requested host; after a second, accept the only new single-tab window
-// (the page may have redirected to another host). Ambiguous cases are left alone.
+// Finds the app window this launch created: a window that did not exist before, with a single tab
+// on the requested host. Anything else (e.g. a redirect to another host) is left alone rather than
+// risk recording a window the user opened.
 async function findLaunchedWindow(before: Set<string>, url: string): Promise<string | undefined> {
   const host = bareHost(url);
   for (let i = 0; i < 40; i++) {
@@ -57,7 +67,6 @@ async function findLaunchedWindow(before: Set<string>, url: string): Promise<str
     }
     const match = candidates.find((c) => host && c.host === host);
     if (match) return match.id;
-    if (i >= 13 && candidates.length === 1) return candidates[0].id;
   }
   return undefined;
 }
@@ -75,7 +84,7 @@ async function resizeNewWindow(before: Set<string>, url: string, width: number, 
     end tell`);
 }
 
-async function openLittleChrome(url: string): Promise<void> {
+export async function openLittleChrome(url: string): Promise<void> {
   const prefs = getPreferenceValues<Preferences>();
   const width = parseInt(prefs.width ?? "", 10) || 900;
   const height = parseInt(prefs.height ?? "", 10) || 700;
@@ -95,6 +104,33 @@ async function openLittleChrome(url: string): Promise<void> {
     return;
   }
   if (before) await resizeNewWindow(before, url, width, height).catch(() => undefined);
+}
+
+// Raycast stops a view command once its window closes, before the new window is resized and
+// recorded, so hand the URL to the no-view Open URL command.
+async function launchLittleChrome(url: string): Promise<void> {
+  try {
+    await launchCommand({ name: "open-url", type: LaunchType.Background, arguments: { url } });
+  } catch (e) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Little Chrome failed",
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return;
+  }
+  await closeMainWindow({ clearRootSearch: true });
+}
+
+// Chrome opens URLs from other apps in its last active normal window, never in an app window.
+async function openInChromeTab(url: string): Promise<void> {
+  try {
+    await exec("open", ["-a", CHROME, url]);
+  } catch (e) {
+    await showHUD(`Opening in Chrome failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  await closeMainWindow({ clearRootSearch: true });
 }
 
 type HistoryItem = { url: string; title: string; favicon?: string };
@@ -153,18 +189,27 @@ async function searchHistory(db: string, text: string, blocklist: Blocklist): Pr
         .map((p) => `url LIKE '${p}${escape(words[0])}%' ESCAPE '\\'`)
         .join(" OR ")} THEN 3 ELSE 1 END`
     : "1";
-  const days = `((strftime('%s', 'now') + 11644473600) * 1000000 - last_visit_time) / 86400000000.0`;
+  const now = `((strftime('%s', 'now') + 11644473600) * 1000000)`;
+  const days = `(${now} - last_visit_time) / 86400000000.0`;
   const recency = `CASE WHEN ${days} < 4 THEN 1.0 WHEN ${days} < 14 THEN 0.7 WHEN ${days} < 31 THEN 0.5
     WHEN ${days} < 90 THEN 0.3 ELSE 0.1 END`;
-  const order = `ORDER BY (visit_count + 2 * typed_count) * ${recency} * ${hostMatch} DESC, last_visit_time DESC LIMIT 50`;
+  // Trending: visits per day over the last 2 days against the 28 days before, so pages that suddenly
+  // get visited a lot rise. The +1 keeps a single new visit from spiking; capped at 5x.
+  const trend = `WITH trend AS (SELECT url AS id, SUM(visit_time > ${now} - 2 * 86400000000) AS recent,
+      SUM(visit_time <= ${now} - 2 * 86400000000) AS prior
+    FROM visits WHERE visit_time > ${now} - 30 * 86400000000 GROUP BY url)`;
+  const growth = `MIN(5.0, COALESCE(trend.recent, 0) / 2.0 / (COALESCE(trend.prior, 0) / 28.0 + 1))`;
+  const from = `FROM urls LEFT JOIN trend ON trend.id = urls.id`;
+  const order = `ORDER BY (visit_count + 2 * typed_count) * ${recency} * ${hostMatch} * (1 + ${growth}) DESC,
+    last_visit_time DESC LIMIT 50`;
   try {
     // Largest favicon bitmap per page; files are cached by bitmap id + update time.
     const rows = await sqlite<HistoryItem & { bitmap: string | null }>(
       db,
-      `SELECT url, title, (SELECT b.id || '-' || b.last_updated FROM f.icon_mapping m
+      `${trend} SELECT url, title, (SELECT b.id || '-' || b.last_updated FROM f.icon_mapping m
          JOIN f.favicon_bitmaps b ON b.icon_id = m.icon_id
          WHERE m.page_url = urls.url ORDER BY b.width DESC LIMIT 1) AS bitmap
-       FROM urls WHERE ${filter} ${order}`,
+       ${from} WHERE ${filter} ${order}`,
     );
     const missing = [...new Set(rows.map((r) => r.bitmap).filter((b): b is string => !!b))].filter(
       (b) => !existsSync(join(FAVICON_DIR, `${b}.png`)),
@@ -185,7 +230,7 @@ async function searchHistory(db: string, text: string, blocklist: Blocklist): Pr
         bitmap && existsSync(join(FAVICON_DIR, `${bitmap}.png`)) ? join(FAVICON_DIR, `${bitmap}.png`) : undefined,
     }));
   } catch {
-    return sqlite<HistoryItem>(db, `SELECT url, title FROM urls WHERE ${filter} ${order}`);
+    return sqlite<HistoryItem>(db, `${trend} SELECT url, title ${from} WHERE ${filter} ${order}`);
   }
 }
 
@@ -195,6 +240,7 @@ const cache = new Cache();
 export default function Command(props: LaunchProps) {
   const [searchText, setSearchText] = useState(props.fallbackText ?? "");
   const profile = useMemo(currentProfile, []);
+  const profileLabel = useMemo(() => profileName(profile), [profile]);
   const cacheKey = `initial:${profile}`;
   const [items, setItems] = useState<HistoryItem[]>(() => {
     const cached = !props.fallbackText && cache.get(cacheKey);
@@ -215,6 +261,12 @@ export default function Command(props: LaunchProps) {
   async function updateBlocklist(next: Blocklist) {
     await saveBlocklist(profile, next);
     setBlocklist(next);
+    // The cached empty-search rows are only rewritten by an empty search, so drop hidden ones now.
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      const rows: HistoryItem[] = JSON.parse(cached);
+      cache.set(cacheKey, JSON.stringify(rows.filter((r) => !isBlocked(r.url, next))));
+    }
   }
 
   async function hide(next: Blocklist, title: string) {
@@ -254,6 +306,8 @@ export default function Command(props: LaunchProps) {
   }, [db, searchText, blocklist, cacheKey]);
 
   const typed = searchText.trim();
+  // Wait for the blocklist so cached rows never show a page hidden since they were saved.
+  const visible = blocklist ? items.filter((item) => !isBlocked(item.url, blocklist)) : [];
 
   // Also offered on the typed row and the empty view, so it stays reachable after hiding everything.
   const manageAction = blocklist && (blocklist.urls.length > 0 || blocklist.hosts.length > 0) && (
@@ -269,10 +323,11 @@ export default function Command(props: LaunchProps) {
     <List
       searchText={searchText}
       onSearchTextChange={setSearchText}
+      navigationTitle={`Little Chrome — ${profileLabel}`}
       searchBarPlaceholder="URL or search"
       isLoading={isLoading}
       filtering={false}
-      selectedItemId={items[0] ? `${generation}:${items[0].url}` : undefined}
+      selectedItemId={visible[0] ? `${generation}:${visible[0].url}` : undefined}
     >
       <List.EmptyView
         icon={Icon.Globe}
@@ -291,15 +346,16 @@ export default function Command(props: LaunchProps) {
               <Action
                 title="Open in Little Chrome"
                 icon={Icon.Window}
-                onAction={() => openLittleChrome(toUrl(typed))}
+                onAction={() => launchLittleChrome(toUrl(typed))}
               />
+              <Action title="Open in Chrome Tab" icon={Icon.Globe} onAction={() => openInChromeTab(toUrl(typed))} />
               {manageAction}
             </ActionPanel>
           }
         />
       )}
-      <List.Section title="History">
-        {items.map((item) => (
+      <List.Section title="History" subtitle={profileLabel}>
+        {visible.map((item) => (
           <List.Item
             key={`${generation}:${item.url}`}
             id={`${generation}:${item.url}`}
@@ -308,7 +364,12 @@ export default function Command(props: LaunchProps) {
             subtitle={item.title ? item.url : undefined}
             actions={
               <ActionPanel>
-                <Action title="Open in Little Chrome" icon={Icon.Window} onAction={() => openLittleChrome(item.url)} />
+                <Action
+                  title="Open in Little Chrome"
+                  icon={Icon.Window}
+                  onAction={() => launchLittleChrome(item.url)}
+                />
+                <Action title="Open in Chrome Tab" icon={Icon.Globe} onAction={() => openInChromeTab(item.url)} />
                 <Action.CopyToClipboard title="Copy URL" content={item.url} />
                 <ActionPanel.Section>
                   <Action

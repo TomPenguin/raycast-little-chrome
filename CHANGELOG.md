@@ -1,9 +1,15 @@
 # Little Chrome Changelog
 
-## [Initial Version] - {PR_MERGE_DATE}
+## [Trending Suggestions and Profile Name] - {PR_MERGE_DATE}
+
+- Rank suggestions higher when a page was visited much more often in the last couple of days
+- Show the current Chrome profile name in Open Little Chrome
+
+## [Initial Version] - 2026-11-09
 
 - Open URLs or Google searches in a chromeless Chrome app window
 - Suggestions from Chrome history with favicons, ranked by frecency
 - Hide pages or whole sites from suggestions, per Chrome profile, and manage them in Manage Hidden Suggestions
+- Open a URL directly from Quicklinks and deeplinks with Open URL in Little Chrome
 - Move a Little Chrome window into a normal Chrome tab
 - Copy the URL of the focused Chrome window

@@ -6,11 +6,15 @@ The window has no address bar, tab bar or bookmarks bar, uses your normal Chrome
 
 ## Commands
 
-- **Open Little Chrome** — type a URL or search terms and press Enter. Your Chrome history (with favicons) is listed below the search bar, ranked by how often and how recently you visited each page. The top history match is selected; press ↑ to open exactly what you typed instead.
+- **Open Little Chrome** — type a URL or search terms and press Enter. Your Chrome history (with favicons) is listed below the search bar, ranked by how often and how recently you visited each page. The top history match is selected; press ↑ to open exactly what you typed instead. Press ⌘↵ to open it in a tab of a normal Chrome window instead.
   - Input with a scheme (`https://…`, `chrome://…`) is opened as is.
   - Domains and IP addresses get `https://`; `localhost`, `127.0.0.1`, `*.localhost` and `*.test` get `http://`.
   - Anything else becomes a Google search.
   - Press ⌃X on a history item to hide it from suggestions, or ⌃⇧X to hide every page from that site. Hidden items are kept per Chrome profile and are never deleted from Chrome's history. Use **Manage Hidden Suggestions** to review and unhide them.
+- **Open URL in Little Chrome** — opens the URL or search terms given as its argument right away, without the suggestion list. Handy in Quicklinks and deeplinks, e.g. a Quicklink with this link opens Google Translate in a Little Chrome window:
+  ```
+  raycast://extensions/tompenguin/little-chrome/open-url?arguments=%7B%22url%22%3A%22https%3A%2F%2Ftranslate.google.com%2F%3Ftext%3D{Query}%22%7D
+  ```
 - **Open Little Chrome in Tab** — moves the focused Little Chrome window into a new tab of your frontmost normal Chrome window (or a new window if none is open).
 - **Manage Hidden Suggestions** — lists the pages and sites hidden from suggestions for the current Chrome profile; unhide them one by one or all at once.
 - **Copy Chrome URL** — copies the URL of the focused Chrome window, including Little Chrome windows that have no address bar.
