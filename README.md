@@ -6,8 +6,8 @@ The window has no address bar, tab bar or bookmarks bar, uses your normal Chrome
 
 ## Commands
 
-- **Open Little Chrome** — type a URL or search terms and press Enter. Your Chrome history (with favicons) is listed below the search bar, ranked by how often and how recently you visited each page. The top history match is selected; press ↑ to open exactly what you typed instead. Press ⌘↵ to open it in a tab of a normal Chrome window instead.
-  - Choose the Chrome profile from the menu next to the search bar (⌘P). Suggestions, hidden items and opened windows follow the chosen profile. It starts with the default Chrome profile.
+- **Open Little Chrome** — type a URL or search terms and press Enter. Matching Chrome bookmarks are listed below the search bar, followed by your Chrome history (with favicons), ranked by how often and how recently you visited each page. The top match is selected; press ↑ to open exactly what you typed instead. Press ⌘↵ to open it in a tab of a normal Chrome window instead.
+  - Choose the Chrome profile from the menu next to the search bar (⌘P). Bookmarks, suggestions, hidden items and opened windows follow the chosen profile. It starts with the default Chrome profile.
   - Input with a scheme (`https://…`, `chrome://…`) is opened as is.
   - Domains and IP addresses get `https://`; `localhost`, `127.0.0.1`, `*.localhost` and `*.test` get `http://`.
   - Anything else becomes a Google search.
@@ -30,7 +30,7 @@ On first use macOS asks whether Raycast may control Google Chrome (and System Ev
 
 ## How It Works
 
-Windows are opened with Chrome's `--app=<url>` flag, which a running Chrome forwards to its existing process. Chrome ignores `--window-size` in that case, so the new window is resized via AppleScript. History and favicons are read from snapshot copies of Chrome's local `History` and `Favicons` databases; nothing is sent over the network.
+Windows are opened with Chrome's `--app=<url>` flag, which a running Chrome forwards to its existing process. Chrome ignores `--window-size` in that case, so the new window is resized via AppleScript. History and favicons are read from snapshot copies of Chrome's local `History` and `Favicons` databases, and bookmarks from the profile's `Bookmarks` and `AccountBookmarks` files; nothing is sent over the network.
 
 ## Limitations
 

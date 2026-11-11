@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Blocklist, CHROME_DIR, isBlocked, loadBlocklist, saveBlocklist } from "./blocklist";
+import { loadBookmarks, matchBookmarks } from "./bookmarks";
 import { addLittleWindowId, CHROME, exec, osascript, windowIds } from "./chrome";
 import { ManageHiddenSuggestions, ProfileNotFound } from "./manage-hidden";
 import { chromeProfiles, defaultProfile, profileName } from "./profile";
@@ -282,6 +283,8 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
     const cached = !props.fallbackText && cache.get(cacheKey);
     return cached ? JSON.parse(cached) : [];
   });
+  // The search the shown results belong to; bookmarks follow it so they change together with history.
+  const [resultsText, setResultsText] = useState(searchText);
   const firstQuery = useRef(true);
   // Raycast resets the selection to the first row on every search change, so give each
   // result set fresh ids to make selectedItemId change and re-select the top history row.
@@ -289,6 +292,7 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
   const [isLoading, setIsLoading] = useState(true);
   const [blocklist, setBlocklist] = useState<Blocklist>();
   const db = useMemo(() => snapshotHistory(profile), [profile]);
+  const bookmarks = useMemo(() => loadBookmarks(profile), [profile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -331,7 +335,10 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
 
   useEffect(() => {
     if (!blocklist) return;
-    if (!db) return setIsLoading(false);
+    if (!db) {
+      setResultsText(searchText);
+      return setIsLoading(false);
+    }
     let cancelled = false;
     const abort = new AbortController();
     setIsLoading(true);
@@ -344,10 +351,15 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
         .then((r) => {
           if (cancelled) return;
           setItems(r);
+          setResultsText(searchText);
           setGeneration((g) => g + 1);
           if (!searchText.trim()) cache.set(cacheKey, JSON.stringify(r));
         })
-        .catch(() => !cancelled && setItems([]))
+        .catch(() => {
+          if (cancelled) return;
+          setItems([]);
+          setResultsText(searchText);
+        })
         .finally(() => !cancelled && setIsLoading(false));
     }, delay);
     return () => {
@@ -359,7 +371,14 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
 
   const typed = searchText.trim();
   // Wait for the blocklist so cached rows never show a page hidden since they were saved.
-  const visible = blocklist ? items.filter((item) => !isBlocked(item.url, blocklist)) : [];
+  const shownBookmarks = useMemo(() => matchBookmarks(bookmarks, resultsText).slice(0, 10), [bookmarks, resultsText]);
+  const favicons = new Map(items.map((item) => [item.url, item.favicon]));
+  const visible = blocklist
+    ? items.filter((item) => !isBlocked(item.url, blocklist) && !shownBookmarks.some((b) => b.url === item.url))
+    : [];
+  const top = shownBookmarks[0]
+    ? `${generation}:bookmark:${shownBookmarks[0].url}`
+    : visible[0] && `${generation}:${visible[0].url}`;
 
   // Also offered on the typed row and the empty view, so it stays reachable after hiding everything.
   const manageAction = blocklist && (blocklist.urls.length > 0 || blocklist.hosts.length > 0) && (
@@ -378,7 +397,7 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
       searchBarPlaceholder="URL or search"
       isLoading={isLoading}
       filtering={false}
-      selectedItemId={visible[0] ? `${generation}:${visible[0].url}` : undefined}
+      selectedItemId={top}
       searchBarAccessory={
         profiles.length > 1 ? (
           <List.Dropdown tooltip="Chrome Profile" value={profile} onChange={changeProfile}>
@@ -392,7 +411,7 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
       <List.EmptyView
         icon={Icon.Globe}
         title={db ? "Type a URL or Search" : "Chrome History Not Found"}
-        description={db ? "Matching pages from your Chrome history will appear here." : undefined}
+        description={db ? "Matching pages from your Chrome bookmarks and history will appear here." : undefined}
         actions={manageAction ? <ActionPanel>{manageAction}</ActionPanel> : undefined}
       />
       {typed && (
@@ -418,6 +437,36 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
           }
         />
       )}
+      <List.Section title="Bookmarks" subtitle={profileLabel}>
+        {shownBookmarks.map((bookmark) => {
+          const favicon = favicons.get(bookmark.url);
+          return (
+            <List.Item
+              key={`${generation}:bookmark:${bookmark.url}`}
+              id={`${generation}:bookmark:${bookmark.url}`}
+              icon={favicon ? { source: favicon, fallback: Icon.Bookmark } : Icon.Bookmark}
+              title={bookmark.title || bookmark.url}
+              subtitle={bookmark.title ? bookmark.url : undefined}
+              accessories={bookmark.folder ? [{ text: bookmark.folder }] : undefined}
+              actions={
+                <ActionPanel>
+                  <Action
+                    title="Open in Little Chrome"
+                    icon={Icon.Window}
+                    onAction={() => launchLittleChrome(bookmark.url, profile)}
+                  />
+                  <Action
+                    title="Open in Chrome Tab"
+                    icon={Icon.Globe}
+                    onAction={() => openInChromeTab(bookmark.url, profile)}
+                  />
+                  <Action.CopyToClipboard title="Copy URL" content={bookmark.url} />
+                </ActionPanel>
+              }
+            />
+          );
+        })}
+      </List.Section>
       <List.Section title="History" subtitle={profileLabel}>
         {visible.map((item) => (
           <List.Item

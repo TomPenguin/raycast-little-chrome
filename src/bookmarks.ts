@@ -1,0 +1,40 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { CHROME_DIR } from "./blocklist";
+
+export type Bookmark = { url: string; title: string; folder: string };
+
+type BookmarkNode = { type?: string; name?: string; url?: string; children?: BookmarkNode[] };
+
+// Local and account bookmarks of the profile, in Chrome's order, once per URL.
+export function loadBookmarks(profile: string): Bookmark[] {
+  const bookmarks = new Map<string, Bookmark>();
+  const walk = (node: BookmarkNode, path: string[]) => {
+    if (node.type === "url" && node.url) {
+      if (!bookmarks.has(node.url))
+        bookmarks.set(node.url, { url: node.url, title: node.name ?? "", folder: path.join(" / ") });
+    } else {
+      for (const child of node.children ?? []) walk(child, node.name ? [...path, node.name] : path);
+    }
+  };
+  for (const file of ["Bookmarks", "AccountBookmarks"]) {
+    try {
+      const roots: Record<string, BookmarkNode> = JSON.parse(
+        readFileSync(join(CHROME_DIR, profile, file), "utf8"),
+      ).roots;
+      for (const root of Object.values(roots ?? {})) if (root && typeof root === "object") walk(root, []);
+    } catch {
+      // no bookmarks of this kind
+    }
+  }
+  return [...bookmarks.values()];
+}
+
+// Bookmarks whose title or URL contains every word, ignoring case.
+export function matchBookmarks(bookmarks: Bookmark[], text: string): Bookmark[] {
+  const words = text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return bookmarks.filter((b) => {
+    const haystack = `${b.title}\n${b.url}`.toLowerCase();
+    return words.every((w) => haystack.includes(w));
+  });
+}
