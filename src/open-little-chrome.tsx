@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Blocklist, CHROME_DIR, isBlocked, loadBlocklist, saveBlocklist } from "./blocklist";
-import { loadBookmarks, matchBookmarks } from "./bookmarks";
+import { Bookmark, loadBookmarks, matchBookmarks } from "./bookmarks";
 import { addLittleWindowId, CHROME, exec, osascript, windowIds } from "./chrome";
 import { ManageHiddenSuggestions, ProfileNotFound } from "./manage-hidden";
 import { chromeProfiles, defaultProfile, profileName } from "./profile";
@@ -199,6 +199,7 @@ async function searchHistory(
   text: string,
   blocklist: Blocklist,
   signal?: AbortSignal,
+  only?: string[],
 ): Promise<HistoryItem[]> {
   const words = text.trim().split(/\s+/).filter(Boolean);
   const escape = (w: string) => w.replace(/'/g, "''").replace(/[\\%_]/g, "\\$&");
@@ -211,6 +212,11 @@ async function searchHistory(
   for (const host of blocklist.hosts) {
     const h = escape(host);
     where.push(`NOT (url LIKE 'https://${h}/%' ESCAPE '\\' OR url LIKE 'http://${h}/%' ESCAPE '\\')`);
+  }
+  if (only) {
+    const file = join(tmpdir(), "little-chrome-urls.json");
+    writeFileSync(file, JSON.stringify(only));
+    where.push(`url IN (SELECT value FROM json_each(readfile('${file.replace(/'/g, "''")}')))`);
   }
   const filter = `hidden = 0 ${where.map((w) => `AND ${w}`).join(" ")}`;
   // Frecency: visits (typed ones weigh double) decayed by days since the last visit,
@@ -229,7 +235,7 @@ async function searchHistory(
   const growth = hasTrend ? `MIN(5.0, COALESCE(trend.recent, 0) / 2.0 / (COALESCE(trend.prior, 0) / 28.0 + 1))` : "0";
   const from = hasTrend ? `FROM urls LEFT JOIN little_chrome_trend AS trend ON trend.id = urls.id` : "FROM urls";
   const order = `ORDER BY (visit_count + 2 * typed_count) * ${recency} * ${hostMatch} * (1 + ${growth}) DESC,
-    last_visit_time DESC LIMIT 50`;
+    last_visit_time DESC LIMIT ${only ? 3 : 50}`;
   try {
     // Largest favicon bitmap per page; files are cached by bitmap id + update time.
     const rows = await sqlite<HistoryItem & { bitmap: string | null }>(
@@ -266,6 +272,7 @@ async function searchHistory(
 
 // Last suggestions for an empty search, shown instantly on open while fresh ones load.
 const cache = new Cache();
+const NO_BLOCKS: Blocklist = { urls: [], hosts: [] };
 
 export default function Command(props: LaunchProps) {
   const initialProfile = useMemo(defaultProfile, []);
@@ -279,8 +286,14 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
   const profileRef = useRef(profile);
   const profileLabel = useMemo(() => profileName(profile), [profile]);
   const cacheKey = `initial:${profile}`;
+  const bookmarksCacheKey = `initial-bookmarks:${profile}`;
   const [items, setItems] = useState<HistoryItem[]>(() => {
     const cached = !props.fallbackText && cache.get(cacheKey);
+    return cached ? JSON.parse(cached) : [];
+  });
+  // Bookmarks most used recently, by the same ranking as history; shown when the search is empty.
+  const [recentBookmarks, setRecentBookmarks] = useState<HistoryItem[]>(() => {
+    const cached = !props.fallbackText && cache.get(bookmarksCacheKey);
     return cached ? JSON.parse(cached) : [];
   });
   // The search the shown results belong to; bookmarks follow it so they change together with history.
@@ -309,6 +322,8 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
     setBlocklist(undefined);
     const cached = !searchText.trim() && cache.get(`initial:${next}`);
     setItems(cached ? JSON.parse(cached) : []);
+    const cachedBookmarks = !searchText.trim() && cache.get(`initial-bookmarks:${next}`);
+    setRecentBookmarks(cachedBookmarks ? JSON.parse(cachedBookmarks) : []);
     firstQuery.current = true;
   }
 
@@ -346,14 +361,30 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
     // stays selected until fresh results arrive, so Enter while typing opens what was typed.
     const delay = firstQuery.current ? 0 : 150;
     firstQuery.current = false;
+    const empty = !searchText.trim();
     const timer = setTimeout(() => {
-      searchHistory(db, searchText, blocklist, abort.signal)
-        .then((r) => {
+      Promise.all([
+        searchHistory(db, searchText, blocklist, abort.signal),
+        empty && bookmarks.length
+          ? searchHistory(
+              db,
+              "",
+              NO_BLOCKS,
+              abort.signal,
+              bookmarks.map((b) => b.url),
+            ).catch(() => [])
+          : [],
+      ])
+        .then(([r, recent]) => {
           if (cancelled) return;
           setItems(r);
+          if (empty) setRecentBookmarks(recent);
           setResultsText(searchText);
           setGeneration((g) => g + 1);
-          if (!searchText.trim()) cache.set(cacheKey, JSON.stringify(r));
+          if (empty) {
+            cache.set(cacheKey, JSON.stringify(r));
+            cache.set(bookmarksCacheKey, JSON.stringify(recent));
+          }
         })
         .catch(() => {
           if (cancelled) return;
@@ -367,12 +398,16 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
       abort.abort();
       clearTimeout(timer);
     };
-  }, [db, searchText, blocklist, cacheKey]);
+  }, [db, searchText, blocklist, cacheKey, bookmarksCacheKey, bookmarks]);
 
   const typed = searchText.trim();
   // Wait for the blocklist so cached rows never show a page hidden since they were saved.
-  const shownBookmarks = useMemo(() => matchBookmarks(bookmarks, resultsText).slice(0, 10), [bookmarks, resultsText]);
-  const favicons = new Map(items.map((item) => [item.url, item.favicon]));
+  const shownBookmarks = useMemo(() => {
+    if (resultsText.trim()) return matchBookmarks(bookmarks, resultsText).slice(0, 10);
+    const byUrl = new Map(bookmarks.map((b) => [b.url, b]));
+    return recentBookmarks.map((r) => byUrl.get(r.url)).filter((b): b is Bookmark => !!b);
+  }, [bookmarks, resultsText, recentBookmarks]);
+  const favicons = new Map([...items, ...recentBookmarks].map((item) => [item.url, item.favicon]));
   const visible = blocklist
     ? items.filter((item) => !isBlocked(item.url, blocklist) && !shownBookmarks.some((b) => b.url === item.url))
     : [];
