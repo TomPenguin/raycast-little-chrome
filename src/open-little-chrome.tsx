@@ -18,7 +18,15 @@ import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Blocklist, CHROME_DIR, currentProfile, isBlocked, loadBlocklist, saveBlocklist } from "./blocklist";
+import {
+  Blocklist,
+  CHROME_DIR,
+  currentProfile,
+  isBlocked,
+  loadBlocklist,
+  profileName,
+  saveBlocklist,
+} from "./blocklist";
 import { addLittleWindowId, CHROME, exec, osascript, windowIds } from "./chrome";
 import { ManageHiddenSuggestions } from "./manage-hidden";
 
@@ -223,6 +231,7 @@ const cache = new Cache();
 export default function Command(props: LaunchProps) {
   const [searchText, setSearchText] = useState(props.fallbackText ?? "");
   const profile = useMemo(currentProfile, []);
+  const profileLabel = useMemo(() => profileName(profile), [profile]);
   const cacheKey = `initial:${profile}`;
   const [items, setItems] = useState<HistoryItem[]>(() => {
     const cached = !props.fallbackText && cache.get(cacheKey);
@@ -305,6 +314,7 @@ export default function Command(props: LaunchProps) {
     <List
       searchText={searchText}
       onSearchTextChange={setSearchText}
+      navigationTitle={`Little Chrome — ${profileLabel}`}
       searchBarPlaceholder="URL or search"
       isLoading={isLoading}
       filtering={false}
@@ -335,7 +345,7 @@ export default function Command(props: LaunchProps) {
           }
         />
       )}
-      <List.Section title="History">
+      <List.Section title="History" subtitle={profileLabel}>
         {visible.map((item) => (
           <List.Item
             key={`${generation}:${item.url}`}
