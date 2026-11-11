@@ -12,7 +12,7 @@ The window has no address bar, tab bar or bookmarks bar, uses your normal Chrome
   - Input with a scheme (`https://…`, `chrome://…`) is opened as is.
   - Domains and IP addresses get `https://`; `localhost`, `127.0.0.1`, `*.localhost` and `*.test` get `http://`.
   - Anything else becomes a Google search.
-  - Press ⌃X on a history item to hide it from suggestions, or ⌃⇧X to hide every page from that site. Hidden items are kept per Chrome profile and are never deleted from Chrome's history. Use **Manage Hidden Suggestions** to review and unhide them.
+  - Press ⌃X on a bookmark or history item to hide it from suggestions, or ⌃⇧X to hide every page from that site. Hidden items are kept per Chrome profile and are never deleted from Chrome's bookmarks or history. Use **Manage Hidden Suggestions** to review and unhide them.
 - **Open URL in Little Chrome** — opens the URL or search terms given as its argument right away, without the suggestion list. Optionally enter a Chrome profile by its name or folder name (e.g. `Profile 2`); leave it empty to use the default Chrome profile. Handy in Quicklinks and deeplinks, e.g. a Quicklink with this link opens Google Translate in a Little Chrome window:
   ```
   raycast://extensions/tompenguin/little-chrome/open-url?arguments=%7B%22url%22%3A%22https%3A%2F%2Ftranslate.google.com%2F%3Ftext%3D{Query}%22%7D

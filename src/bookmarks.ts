@@ -6,7 +6,8 @@ export type Bookmark = { url: string; title: string; folder: string };
 
 type BookmarkNode = { type?: string; name?: string; url?: string; children?: BookmarkNode[] };
 
-// Local and account bookmarks of the profile, in Chrome's order, once per URL.
+// Local and account bookmarks of the profile, in Chrome's order, once per URL. The folder is the
+// path below Chrome's root folders (bookmarks bar, other bookmarks), empty for bookmarks in a root.
 export function loadBookmarks(profile: string): Bookmark[] {
   const bookmarks = new Map<string, Bookmark>();
   const walk = (node: BookmarkNode, path: string[]) => {
@@ -22,7 +23,8 @@ export function loadBookmarks(profile: string): Bookmark[] {
       const roots: Record<string, BookmarkNode> = JSON.parse(
         readFileSync(join(CHROME_DIR, profile, file), "utf8"),
       ).roots;
-      for (const root of Object.values(roots ?? {})) if (root && typeof root === "object") walk(root, []);
+      for (const root of Object.values(roots ?? {}))
+        if (root && typeof root === "object") for (const child of root.children ?? []) walk(child, []);
     } catch {
       // no bookmarks of this kind
     }

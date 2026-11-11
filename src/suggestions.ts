@@ -7,7 +7,6 @@ const FILTER_LIMIT = 30;
 export type SuggestionMode = {
   id: "all" | "history" | "bookmarks";
   action: string;
-  title?: string;
   placeholder: string;
   icon: Icon;
   key: "1" | "2" | "3";
@@ -30,7 +29,6 @@ export const MODES: SuggestionMode[] = [
   {
     id: "history",
     action: "Show History Only",
-    title: "History Only",
     placeholder: "URL or search history",
     icon: Icon.Clock,
     key: "2",
@@ -39,7 +37,6 @@ export const MODES: SuggestionMode[] = [
   {
     id: "bookmarks",
     action: "Show Bookmarks Only",
-    title: "Bookmarks Only",
     placeholder: "URL or search bookmarks",
     icon: Icon.Bookmark,
     key: "3",
@@ -51,8 +48,8 @@ export const MODES: SuggestionMode[] = [
 export const HISTORY_LIMIT = Math.max(...MODES.map((m) => m.history ?? 0));
 export const USED_BOOKMARKS_LIMIT = Math.max(...MODES.map((m) => m.bookmarks?.empty ?? 0));
 
-// Sections to show for a search: bookmarks first, then history without hidden pages or the
-// bookmarks above. History waits for the blocklist so it never shows a page hidden since loading.
+// Sections to show for a search: bookmarks first, then history without the bookmarks above, both
+// without hidden pages. Both wait for the blocklist so they never show a page hidden since loading.
 export function buildSuggestions<T extends { url: string }>(
   mode: SuggestionMode,
   text: string,
@@ -61,17 +58,18 @@ export function buildSuggestions<T extends { url: string }>(
   history: T[],
   blocklist: Blocklist | undefined,
 ): { bookmarks: Bookmark[]; history: T[] } {
+  if (!blocklist) return { bookmarks: [], history: [] };
+  const allowed = mode.bookmarks ? bookmarks.filter((b) => !isBlocked(b.url, blocklist)) : [];
   const shown = !mode.bookmarks
     ? []
     : text.trim()
-      ? matchBookmarks(bookmarks, text).slice(0, mode.bookmarks.search)
-      : rankBookmarks(bookmarks, used, mode.bookmarks.unvisited).slice(0, mode.bookmarks.empty);
+      ? matchBookmarks(allowed, text).slice(0, mode.bookmarks.search)
+      : rankBookmarks(allowed, used, mode.bookmarks.unvisited).slice(0, mode.bookmarks.empty);
   const shownUrls = new Set(shown.map((b) => b.url));
   return {
     bookmarks: shown,
-    history:
-      mode.history && blocklist
-        ? history.filter((item) => !isBlocked(item.url, blocklist) && !shownUrls.has(item.url)).slice(0, mode.history)
-        : [],
+    history: mode.history
+      ? history.filter((item) => !isBlocked(item.url, blocklist) && !shownUrls.has(item.url)).slice(0, mode.history)
+      : [],
   };
 }
