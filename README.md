@@ -8,6 +8,7 @@ The window has no address bar, tab bar or bookmarks bar, uses your normal Chrome
 
 - **Open Little Chrome** — type a URL or search terms and press Enter. Matching Chrome bookmarks are listed below the search bar, followed by your Chrome history (with favicons), ranked by how often and how recently you visited each page. The top match is selected; press ↑ to open exactly what you typed instead. Press ⌘↵ to open it in a tab of a normal Chrome window instead.
   - Choose the Chrome profile from the menu next to the search bar (⌘P). Bookmarks, suggestions, hidden items and opened windows follow the chosen profile. It starts with the default Chrome profile.
+  - Press ⌘2 to show only history, ⌘3 to show only bookmarks, and ⌘1 to show both again.
   - Input with a scheme (`https://…`, `chrome://…`) is opened as is.
   - Domains and IP addresses get `https://`; `localhost`, `127.0.0.1`, `*.localhost` and `*.test` get `http://`.
   - Anything else becomes a Google search.

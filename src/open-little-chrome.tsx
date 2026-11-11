@@ -274,6 +274,8 @@ async function searchHistory(
 const cache = new Cache();
 const NO_BLOCKS: Blocklist = { urls: [], hosts: [] };
 
+type Source = "all" | "history" | "bookmarks";
+
 export default function Command(props: LaunchProps) {
   const initialProfile = useMemo(defaultProfile, []);
   return initialProfile ? <LittleChrome {...props} initialProfile={initialProfile} /> : <ProfileNotFound />;
@@ -283,6 +285,7 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
   const [searchText, setSearchText] = useState(props.fallbackText ?? "");
   const profiles = useMemo(chromeProfiles, []);
   const [profile, setProfile] = useState(props.initialProfile);
+  const [source, setSource] = useState<Source>("all");
   const profileRef = useRef(profile);
   const profileLabel = useMemo(() => profileName(profile), [profile]);
   const cacheKey = `initial:${profile}`;
@@ -403,14 +406,19 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
   const typed = searchText.trim();
   // Wait for the blocklist so cached rows never show a page hidden since they were saved.
   const shownBookmarks = useMemo(() => {
+    if (source === "history") return [];
     if (resultsText.trim()) return matchBookmarks(bookmarks, resultsText).slice(0, 10);
     const byUrl = new Map(bookmarks.map((b) => [b.url, b]));
-    return recentBookmarks.map((r) => byUrl.get(r.url)).filter((b): b is Bookmark => !!b);
-  }, [bookmarks, resultsText, recentBookmarks]);
+    const recent = recentBookmarks.map((r) => byUrl.get(r.url)).filter((b): b is Bookmark => !!b);
+    if (source === "all") return recent;
+    const recentUrls = new Set(recent.map((b) => b.url));
+    return [...recent, ...bookmarks.filter((b) => !recentUrls.has(b.url))].slice(0, 10);
+  }, [bookmarks, resultsText, recentBookmarks, source]);
   const favicons = new Map([...items, ...recentBookmarks].map((item) => [item.url, item.favicon]));
-  const visible = blocklist
-    ? items.filter((item) => !isBlocked(item.url, blocklist) && !shownBookmarks.some((b) => b.url === item.url))
-    : [];
+  const visible =
+    blocklist && source !== "bookmarks"
+      ? items.filter((item) => !isBlocked(item.url, blocklist) && !shownBookmarks.some((b) => b.url === item.url))
+      : [];
   const top = shownBookmarks[0]
     ? `${generation}:bookmark:${shownBookmarks[0].url}`
     : visible[0] && `${generation}:${visible[0].url}`;
@@ -425,11 +433,47 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
     />
   );
 
+  const sourceActions = (
+    <ActionPanel.Section>
+      {source !== "all" && (
+        <Action
+          title="Show All"
+          icon={Icon.List}
+          shortcut={{ modifiers: ["cmd"], key: "1" }}
+          onAction={() => setSource("all")}
+        />
+      )}
+      {source !== "history" && (
+        <Action
+          title="Show History Only"
+          icon={Icon.Clock}
+          shortcut={{ modifiers: ["cmd"], key: "2" }}
+          onAction={() => setSource("history")}
+        />
+      )}
+      {source !== "bookmarks" && (
+        <Action
+          title="Show Bookmarks Only"
+          icon={Icon.Bookmark}
+          shortcut={{ modifiers: ["cmd"], key: "3" }}
+          onAction={() => setSource("bookmarks")}
+        />
+      )}
+    </ActionPanel.Section>
+  );
+
   return (
     <List
       searchText={searchText}
       onSearchTextChange={setSearchText}
-      searchBarPlaceholder="URL or search"
+      navigationTitle={source === "history" ? "History Only" : source === "bookmarks" ? "Bookmarks Only" : undefined}
+      searchBarPlaceholder={
+        source === "history"
+          ? "URL or search history"
+          : source === "bookmarks"
+            ? "URL or search bookmarks"
+            : "URL or search"
+      }
       isLoading={isLoading}
       filtering={false}
       selectedItemId={top}
@@ -447,7 +491,12 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
         icon={Icon.Globe}
         title={db ? "Type a URL or Search" : "Chrome History Not Found"}
         description={db ? "Matching pages from your Chrome bookmarks and history will appear here." : undefined}
-        actions={manageAction ? <ActionPanel>{manageAction}</ActionPanel> : undefined}
+        actions={
+          <ActionPanel>
+            {manageAction}
+            {sourceActions}
+          </ActionPanel>
+        }
       />
       {typed && (
         <List.Item
@@ -468,6 +517,7 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
                 onAction={() => openInChromeTab(toUrl(typed), profile)}
               />
               {manageAction}
+              {sourceActions}
             </ActionPanel>
           }
         />
@@ -496,6 +546,7 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
                     onAction={() => openInChromeTab(bookmark.url, profile)}
                   />
                   <Action.CopyToClipboard title="Copy URL" content={bookmark.url} />
+                  {sourceActions}
                 </ActionPanel>
               }
             />
@@ -551,6 +602,7 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
                   )}
                   {manageAction}
                 </ActionPanel.Section>
+                {sourceActions}
               </ActionPanel>
             }
           />
