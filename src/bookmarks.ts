@@ -38,3 +38,12 @@ export function matchBookmarks(bookmarks: Bookmark[], text: string): Bookmark[] 
     return words.every((w) => haystack.includes(w));
   });
 }
+
+// Bookmarks in the order of the used URLs, then (with unused) the rest in Chrome's order.
+export function rankBookmarks(bookmarks: Bookmark[], used: { url: string }[], unused: boolean): Bookmark[] {
+  const byUrl = new Map(bookmarks.map((b) => [b.url, b]));
+  const ranked = used.map((u) => byUrl.get(u.url)).filter((b): b is Bookmark => !!b);
+  if (!unused) return ranked;
+  const rankedUrls = new Set(ranked.map((b) => b.url));
+  return [...ranked, ...bookmarks.filter((b) => !rankedUrls.has(b.url))];
+}

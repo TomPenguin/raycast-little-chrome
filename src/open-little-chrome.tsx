@@ -19,10 +19,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Blocklist, CHROME_DIR, isBlocked, loadBlocklist, saveBlocklist } from "./blocklist";
-import { Bookmark, loadBookmarks, matchBookmarks } from "./bookmarks";
+import { loadBookmarks } from "./bookmarks";
 import { addLittleWindowId, CHROME, exec, osascript, windowIds } from "./chrome";
 import { ManageHiddenSuggestions, ProfileNotFound } from "./manage-hidden";
 import { chromeProfiles, defaultProfile, profileName } from "./profile";
+import { buildSuggestions, HISTORY_LIMIT, MODES, SuggestionMode, USED_BOOKMARKS_LIMIT } from "./suggestions";
 
 export function toUrl(input: string): string {
   const q = input.trim();
@@ -198,6 +199,7 @@ async function searchHistory(
   db: string,
   text: string,
   blocklist: Blocklist,
+  limit: number,
   signal?: AbortSignal,
   only?: string[],
 ): Promise<HistoryItem[]> {
@@ -235,7 +237,7 @@ async function searchHistory(
   const growth = hasTrend ? `MIN(5.0, COALESCE(trend.recent, 0) / 2.0 / (COALESCE(trend.prior, 0) / 28.0 + 1))` : "0";
   const from = hasTrend ? `FROM urls LEFT JOIN little_chrome_trend AS trend ON trend.id = urls.id` : "FROM urls";
   const order = `ORDER BY (visit_count + 2 * typed_count) * ${recency} * ${hostMatch} * (1 + ${growth}) DESC,
-    last_visit_time DESC LIMIT ${only ? 3 : 50}`;
+    last_visit_time DESC LIMIT ${limit}`;
   try {
     // Largest favicon bitmap per page; files are cached by bitmap id + update time.
     const rows = await sqlite<HistoryItem & { bitmap: string | null }>(
@@ -274,8 +276,6 @@ async function searchHistory(
 const cache = new Cache();
 const NO_BLOCKS: Blocklist = { urls: [], hosts: [] };
 
-type Source = "all" | "history" | "bookmarks";
-
 export default function Command(props: LaunchProps) {
   const initialProfile = useMemo(defaultProfile, []);
   return initialProfile ? <LittleChrome {...props} initialProfile={initialProfile} /> : <ProfileNotFound />;
@@ -285,7 +285,7 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
   const [searchText, setSearchText] = useState(props.fallbackText ?? "");
   const profiles = useMemo(chromeProfiles, []);
   const [profile, setProfile] = useState(props.initialProfile);
-  const [source, setSource] = useState<Source>("all");
+  const [mode, setMode] = useState<SuggestionMode>(MODES[0]);
   const profileRef = useRef(profile);
   const profileLabel = useMemo(() => profileName(profile), [profile]);
   const cacheKey = `initial:${profile}`;
@@ -367,12 +367,13 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
     const empty = !searchText.trim();
     const timer = setTimeout(() => {
       Promise.all([
-        searchHistory(db, searchText, blocklist, abort.signal),
+        searchHistory(db, searchText, blocklist, HISTORY_LIMIT, abort.signal),
         empty && bookmarks.length
           ? searchHistory(
               db,
               "",
               NO_BLOCKS,
+              USED_BOOKMARKS_LIMIT,
               abort.signal,
               bookmarks.map((b) => b.url),
             ).catch(() => [])
@@ -404,21 +405,15 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
   }, [db, searchText, blocklist, cacheKey, bookmarksCacheKey, bookmarks]);
 
   const typed = searchText.trim();
-  // Wait for the blocklist so cached rows never show a page hidden since they were saved.
-  const shownBookmarks = useMemo(() => {
-    if (source === "history") return [];
-    if (resultsText.trim()) return matchBookmarks(bookmarks, resultsText).slice(0, 10);
-    const byUrl = new Map(bookmarks.map((b) => [b.url, b]));
-    const recent = recentBookmarks.map((r) => byUrl.get(r.url)).filter((b): b is Bookmark => !!b);
-    if (source === "all") return recent;
-    const recentUrls = new Set(recent.map((b) => b.url));
-    return [...recent, ...bookmarks.filter((b) => !recentUrls.has(b.url))].slice(0, 10);
-  }, [bookmarks, resultsText, recentBookmarks, source]);
+  const { bookmarks: shownBookmarks, history: visible } = buildSuggestions(
+    mode,
+    resultsText,
+    bookmarks,
+    recentBookmarks,
+    items,
+    blocklist,
+  );
   const favicons = new Map([...items, ...recentBookmarks].map((item) => [item.url, item.favicon]));
-  const visible =
-    blocklist && source !== "bookmarks"
-      ? items.filter((item) => !isBlocked(item.url, blocklist) && !shownBookmarks.some((b) => b.url === item.url))
-      : [];
   const top = shownBookmarks[0]
     ? `${generation}:bookmark:${shownBookmarks[0].url}`
     : visible[0] && `${generation}:${visible[0].url}`;
@@ -433,47 +428,14 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
     />
   );
 
-  const sourceActions = (
-    <ActionPanel.Section>
-      {source !== "all" && (
-        <Action
-          title="Show All"
-          icon={Icon.List}
-          shortcut={{ modifiers: ["cmd"], key: "1" }}
-          onAction={() => setSource("all")}
-        />
-      )}
-      {source !== "history" && (
-        <Action
-          title="Show History Only"
-          icon={Icon.Clock}
-          shortcut={{ modifiers: ["cmd"], key: "2" }}
-          onAction={() => setSource("history")}
-        />
-      )}
-      {source !== "bookmarks" && (
-        <Action
-          title="Show Bookmarks Only"
-          icon={Icon.Bookmark}
-          shortcut={{ modifiers: ["cmd"], key: "3" }}
-          onAction={() => setSource("bookmarks")}
-        />
-      )}
-    </ActionPanel.Section>
-  );
+  const sourceActions = <ModeActions current={mode} onChange={setMode} />;
 
   return (
     <List
       searchText={searchText}
       onSearchTextChange={setSearchText}
-      navigationTitle={source === "history" ? "History Only" : source === "bookmarks" ? "Bookmarks Only" : undefined}
-      searchBarPlaceholder={
-        source === "history"
-          ? "URL or search history"
-          : source === "bookmarks"
-            ? "URL or search bookmarks"
-            : "URL or search"
-      }
+      navigationTitle={mode.title}
+      searchBarPlaceholder={mode.placeholder}
       isLoading={isLoading}
       filtering={false}
       selectedItemId={top}
@@ -609,5 +571,21 @@ function LittleChrome(props: LaunchProps & { initialProfile: string }) {
         ))}
       </List.Section>
     </List>
+  );
+}
+
+function ModeActions({ current, onChange }: { current: SuggestionMode; onChange: (mode: SuggestionMode) => void }) {
+  return (
+    <ActionPanel.Section>
+      {MODES.filter((m) => m.id !== current.id).map((m) => (
+        <Action
+          key={m.id}
+          title={m.action}
+          icon={m.icon}
+          shortcut={{ modifiers: ["cmd"], key: m.key }}
+          onAction={() => onChange(m)}
+        />
+      ))}
+    </ActionPanel.Section>
   );
 }
